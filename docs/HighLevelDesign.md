@@ -68,7 +68,7 @@ flowchart TD
         FLAIRBIT["FlairBit Service<br/>/internal/chat-service/..."]
         RABBITMQ["RabbitMQ Cluster<br/>amq.topic"]
         STOMP_BROKER["STOMP Broker<br/>(RabbitMQ Relay or Embedded)"]
-        POSTGRES["PostgreSQL<br/>chat_sessions, chat_messages, chat_message_outbox"]
+        POSTGRES["PostgreSQL<br/>chat_sessions<br/>chat_messages<br/>chat_message_outbox"]
     end
 
     %% Connections
@@ -128,6 +128,7 @@ flowchart TD
     class FLAIRBIT,RABBITMQ,STOMP_BROKER,POSTGRES external
     class C1,C2 client
     class REST,WS,RABBIT_CONSUMER,OUTBOX,CACHE,FEIGN,SERVICE_AUTH component
+
 ```
 
 ---
