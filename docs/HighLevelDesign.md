@@ -109,14 +109,15 @@ flowchart TD
     A1 --> OUTBOX
     A2 --> OUTBOX
     A3 --> OUTBOX
-    OUTBOX -->|claimPendingBatch()| POSTGRES
-    OUTBOX -->|convertAndSend()| STOMP_BROKER
+    OUTBOX -->|"claimPendingBatch()"| POSTGRES
+    OUTBOX -->|"convertAndSend()"| STOMP_BROKER
 
     REST --> FEIGN
-    FEIGN -->|Bearer JWT| FLAIRBIT
-    FEIGN -->|Cached| CACHE
+    FEIGN -->|"Bearer JWT"| FLAIRBIT
+    FEIGN -->|"Cached"| CACHE
     FEIGN --> SERVICE_AUTH
-    SERVICE_AUTH -->|RSA Sign| FEIGN
+    SERVICE_AUTH -->|"RSA Sign"| FEIGN
+
 
     %% Styling
     classDef service fill:#4CAF50,color:white,stroke:#388E3C;
