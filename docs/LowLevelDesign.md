@@ -1,294 +1,555 @@
-# `lld.md` — **Low-Level Design**
-## **Real-Time Chat Service (High-Traffic, Scalable, Reliable)**
+### Low-Level Design (LLD): Real-Time Chat System
 
 ---
 
-```markdown
-# Low-Level Design (LLD): Real-Time Chat System
+## 1. Introduction
 
-> **Service**: `chat-service`  
-> **Purpose**: High-throughput, low-latency, eventually consistent, real-time chat with guaranteed delivery  
-> **Tech Stack**: Spring Boot, PostgreSQL (JDBC), RabbitMQ, WebSocket/STOMP, Caffeine, Feign, JWT (RSA), Liquibase  
-> **Deployment Target**: Kubernetes (multi-instance, horizontal scaling)
+This **Low-Level Design (LLD)** document details the **implementation-level design** for the Real-Time Chat System described in the High-Level Design (HLD). It covers:
+
+- **Class diagrams** for key components.
+- **API contracts** (REST, STOMP, RabbitMQ).
+- **Data flow sequences** for critical operations.
+- **Database schema** and access patterns.
+- **Error handling**, **caching**, **security**, and **scalability** strategies.
 
 ---
 
-## 1. System Overview
+## 2. System Overview
 
+The system is built on a **microservices** architecture with the following **core modules**:
+
+| Module                | Responsibility                                                                 |
+|-----------------------|--------------------------------------------------------------------------------|
+| **Chat Service**      | Business logic for chat operations, message persistence, and broadcasting.     |
+| **Profile Service**   | Fetches user profiles from FlairBit (with caching).                           |
+| **Outbox Publisher**  | Guarantees reliable message delivery to WebSocket clients.                    |
+| **WebSocket/STOMP**   | Manages real-time connections and message brokering.                          |
+| **RabbitMQ**          | Cross-instance message relay for scalability.                                 |
+| **Security**          | JWT generation/validation for service-to-service and client-to-service auth.  |
+| **Database**          | PostgreSQL for persistent storage of chats, messages, and outbox.             |
+
+---
+
+## 3. Component Design
+
+### 3.1 Chat Service
+
+#### 3.1.1 Class Diagram
+
+```mermaid
+classDiagram
+    class ChatController {
+        +ResponseEntity<ChatSessionResponse> initChat(InitChatRequest)
+        +ResponseEntity<ChatMessageResponse> sendMessage(ChatMessageRequest)
+        +ResponseEntity<List<ChatMessageResponse>> history(UUID, int)
+        +ResponseEntity<List<ChatMessageResponse>> unread(UUID, String, String)
+    }
+
+    class ChatService {
+        +ChatSessionResponse initChat(String, String, String)
+        +ChatMessage sendMessage(UUID, String, String, String, UUID)
+        +void markDelivered(UUID, String, String)
+        +void markRead(UUID, String, String)
+        +List<ChatMessage> getHistory(UUID, int)
+        +List<ChatMessage> getUnread(UUID, String, String)
+        -void broadcast(ChatMessage, ChatSession)
+        -void broadcastDeliveryUpdate(ChatMessage)
+    }
+
+    class ChatSessionService {
+        +ChatSession getOrCreateSession(String, String, String)
+        -String canonical(String)
+    }
+
+    class ProfileService {
+        +ProfileChatDto getByEmail(String, String)
+        -String canonical(String)
+    }
+
+    class ChatMessageRelayListener {
+        +void handleChatMessage(ChatMessageRequest)
+    }
+
+    class ChatSessionJDBCRepository {
+        +ChatSession findById(UUID)
+        +ChatSession getOrCreate(UUID, UUID, String)
+    }
+
+    class ChatMessageJDBCRepository {
+        +ChatMessage save(ChatMessage)
+        +boolean existsByClientMsgId(UUID)
+        +List<ChatMessage> findBySessionIdOrderBySentAtDesc(UUID, int)
+        +List<ChatMessage> findUnseenBySessionAndReader(UUID, UUID)
+    }
+
+    class ChatMessageOutboxJDBCRepository {
+        +List<ChatMessageOutbox> claimPendingBatch(int, Instant)
+        +void markProcessed(UUID, int)
+        +void markRetry(UUID, int, Instant)
+        +ChatMessageOutbox save(ChatMessageOutbox)
+    }
+
+    ChatController "1" --> "1" ChatService
+    ChatService "1" --> "1" ChatSessionService
+    ChatService "1" --> "1" ProfileService
+    ChatService "1" --> "1" ChatMessageJDBCRepository
+    ChatService "1" --> "1" ChatSessionJDBCRepository
+    ChatService "1" --> "1" ChatMessageOutboxJDBCRepository
+    ChatService "1" --> "1" SimpMessagingTemplate
+
+    ChatMessageRelayListener "1" --> "1" ChatService
+    ChatMessageRelayListener "1" --> "1" SimpMessagingTemplate
+
+    ProfileService "1" --> "1" FlairBitClient
+    ProfileService "1" --> "1" Cache~profileCache~
 ```
-[Client (Web/Mobile)]
-│
-▼
-[API Gateway / Load Balancer]
-│
-▼
-[chat-service (N instances)]
-├─→ REST API (/api/chat/...)
-├─→ WebSocket (/ws)
-├─→ RabbitMQ Consumer (chat.send.queue)
-└─→ Outbox Poller → STOMP Broker
-│
-▼
-[PostgreSQL] ← chat_sessions, chat_messages, chat_message_outbox
-│
-▼
-[FlairBit Service] ← Feign + CircuitBreaker + Cache
+
+#### 3.1.2 Key Classes & Methods
+
+| Class                     | Description                                                                                  | Key Methods                                                                 |
+|---------------------------|----------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------|
+| `ChatController`          | Exposes REST APIs for chat operations.                                                       | `initChat`, `sendMessage`, `history`, `unread`                              |
+| `ChatServiceImp`          | Core business logic. Handles message persistence, validation, and broadcasting.             | `sendMessage`, `markDelivered`, `markRead`, `getHistory`, `getUnread`        |
+| `ChatSessionService`      | Manages chat sessions between users. Ensures uniqueness based on participants and intent.   | `getOrCreateSession`                                                        |
+| `ProfileService`          | Fetches user profiles from FlairBit with caching.                                            | `getByEmail`                                                                |
+| `ChatMessageRelayListener`| Listens to RabbitMQ for cross-instance messages and relays them via STOMP.                   | `handleChatMessage`                                                         |
+| `ChatMessageOutboxJDBCRepository` | Custom repository for outbox pattern (claims pending messages for processing). | `claimPendingBatch`, `markProcessed`, `markRetry`                          |
+
+---
+
+### 3.2 Profile Service
+
+#### 3.2.1 Class Diagram
+
+```mermaid
+classDiagram
+    class ProfileService {
+        +ProfileChatDto getByEmail(String, String)
+        -String canonical(String)
+    }
+
+    class FlairBitClient {
+        +ProfileChatDto getProfileByUserEmail(String, String)
+    }
+
+    class Cache~profileCache~ {
+        +<T> get(K)
+        +put(K, V)
+    }
+
+    ProfileService "1" --> "1" FlairBitClient
+    ProfileService "1" --> "1" Cache~profileCache~
 ```
 
+#### 3.2.2 Flow: Fetching a Profile
+
+1. **Cache Check**:  
+   `ProfileService.getByEmail(email, intent)` generates a cache key (`email + "|" + intent`).
+    - If found in **Caffeine Cache**, return the cached `ProfileChatDto`.
+
+2. **Remote Call**:
+    - If not cached, call `FlairBitClient.getProfileByUserEmail(email, intent)`.
+    - The Feign client adds a **JWT token** (generated by `ServiceAuthClient`) to the request header.
+
+3. **Cache & Return**:
+    - Store the response in the cache (TTL = 15 minutes).
+    - Return the profile.
+
 ---
 
-## 2. Core Entities
+### 3.3 Outbox Publisher
 
-| Table | Key Fields | Purpose |
-|------|-----------|-------|
-| `chat_sessions` | `id (UUID PK)`, `sender_profile_id`, `receiver_profile_id`, `intent`, `created_at` | One session per `(profileA, profileB, intent)` pair |
-| `chat_messages` | `id (UUID PK)`, `session_id`, `sender_profile_id`, `content`, `client_msg_id (UNIQUE)`, `sent_at`, `delivered`, `seen` | Message storage + history |
-| `chat_message_outbox` | `id (UUID PK)`, `destination`, `payload (JSONB)`, `created_at`, `sent_at`, `processed`, `next_retry_at`, `retry_count` | Guaranteed STOMP delivery |
+#### 3.3.1 Class Diagram
+
+```mermaid
+classDiagram
+    class OutboxPublisher {
+        +void publish()
+        +void processMessage(ChatMessageOutbox)
+        +void handleFailure(ChatMessageOutbox)
+        +void shutdown()
+    }
+
+    class ChatMessageOutboxJDBCRepository {
+        +List<ChatMessageOutbox> claimPendingBatch(int, Instant)
+        +void markProcessed(UUID, int)
+        +void markRetry(UUID, int, Instant)
+    }
+
+    class SimpMessagingTemplate {
+        +convertAndSend(String, Object)
+        +convertAndSendToUser(String, String, Object)
+    }
+
+    class ObjectMapper {
+        +readValue(String, Class<T>)
+        +writeValueAsString(Object)
+    }
+
+    OutboxPublisher "1" --> "1" ChatMessageOutboxJDBCRepository
+    OutboxPublisher "1" --> "1" SimpMessagingTemplate
+    OutboxPublisher "1" --> "1" ObjectMapper
+```
+
+#### 3.3.2 Workflow
+
+1. **Scheduled Job** (`@Scheduled(fixedDelay = 1000)`):
+    - Calls `outboxRepo.claimPendingBatch()` to fetch **unprocessed** messages (using `SELECT ... FOR UPDATE SKIP LOCKED`).
+    - Processes messages in **parallel** using a fixed thread pool (`parallelWorkers = CPUs + 1`).
+
+2. **Processing a Message**:
+    - Deserialize `payload` (JSON) to `ChatMessageResponse`.
+    - Send to the appropriate destination:
+        - **User-specific queue**: `convertAndSendToUser(user, destination, payload)`
+        - **Topic**: `convertAndSend(destination, payload)`
+    - Mark the outbox entry as **processed**.
+
+3. **Failure Handling**:
+    - On failure, **exponential backoff** is applied (min 60s).
+    - Update `next_retry_at` and increment `retry_count`.
+    - After **10 retries**, log for manual inspection.
 
 ---
 
-## 3. Key DTOs
+### 3.4 WebSocket / STOMP
+
+#### 3.4.1 Configuration
 
 ```java
-InitChatRequest → { fromEmail, toEmail, intent }
-ChatSessionResponse → { sessionId: UUID }
+@Configuration
+@EnableWebSocketMessageBroker
+public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
-ChatMessageRequest → {
-  sessionId: UUID,
-  senderEmail: String,
-  intent: String,
-  content: String,
-  clientMessageId: UUID
+    @Value("${app.websocket.broker-type:embedded}")
+    private String brokerType;
+
+    @Override
+    public void configureMessageBroker(MessageBrokerRegistry registry) {
+        if ("relay".equalsIgnoreCase(brokerType)) {
+            // Use RabbitMQ as STOMP broker
+            registry.enableStompBrokerRelay("/topic", "/queue")
+                    .setRelayHost("rabbitmq")
+                    .setRelayPort(61613)
+                    .setClientLogin("guest")
+                    .setClientPasscode("guest");
+        } else {
+            // Use embedded broker
+            registry.enableSimpleBroker("/topic", "/queue");
+        }
+        registry.setApplicationDestinationPrefixes("/app");
+    }
+
+    @Override
+    public void registerStompEndpoints(StompEndpointRegistry registry) {
+        registry.addEndpoint("/ws")
+                .setAllowedOriginPatterns("*")
+                .withSockJS(); // Fallback to HTTP for browsers without WebSocket
+    }
 }
+```
 
-ChatMessageResponse → {
-  messageId, sessionId, senderId, senderEmail, senderDisplayName,
-  content, sentAt, delivered, seen
+#### 3.4.2 STOMP Endpoints
+
+| Endpoint          | Purpose                                                                 | Destination Prefixes       |
+|-------------------|-------------------------------------------------------------------------|----------------------------|
+| `/ws`             | WebSocket entry point (with SockJS fallback).                            | `/app` (for sending)       |
+| `/topic/session.{chatId}` | Broadcast messages to all participants of a chat.                  | `/topic` (for broadcasting)|
+| `/user/queue/ack` | User-specific queue for message delivery acknowledgments.             | `/queue` (for user queues) |
+| `/user/queue/error` | User-specific queue for error notifications.                       | `/queue`                   |
+
+---
+
+### 3.5 RabbitMQ
+
+#### 3.5.1 Configuration
+
+```java
+@Configuration
+@EnableRabbit
+public class RabbitConfig {
+
+    public static final String QUEUE_NAME = "chat.send.queue";
+    public static final String EXCHANGE_NAME = "amq.topic";
+    public static final String ROUTING_KEY = "app.chat.send";
+
+    // Queue, Exchange, and Binding
+    @Bean
+    public Queue chatSendQueue() {
+        return QueueBuilder.durable(QUEUE_NAME).build();
+    }
+
+    @Bean
+    public TopicExchange topicExchange() {
+        return new TopicExchange(EXCHANGE_NAME);
+    }
+
+    @Bean
+    public Binding binding(Queue queue, TopicExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange).with(ROUTING_KEY);
+    }
+
+    // Listener Container Factory (with retries, concurrency, etc.)
+    @Bean
+    public SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory(
+            ConnectionFactory connectionFactory,
+            Jackson2JsonMessageConverter converter) {
+
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setMessageConverter(converter);
+        factory.setConcurrentConsumers(4);
+        factory.setMaxConcurrentConsumers(10);
+        factory.setPrefetchCount(25);
+        factory.setDefaultRequeueRejected(false);
+        return factory;
+    }
+}
+```
+
+#### 3.5.2 Message Format
+
+Messages sent to RabbitMQ are of type `ChatMessageRequest`:
+
+```json
+{
+  "sessionId": "f81d4fae-7dec-11d0-a765-00a0c9b4d51",
+  "senderEmail": "alice@example.com",
+  "intent": "dating",
+  "content": "Hello!",
+  "clientMessageId": "c1234567-89ab-cdef-0123-456789abcdef"
 }
 ```
 
 ---
 
-## 4. REST API Endpoints
+### 3.6 Security
 
-| Method | Path | Description |
-|-------|------|-----------|
-| `POST` | `/api/chat/init` | Create or get session |
-| `POST` | `/api/chat/message` | Send message |
-| `GET` | `/api/chat/{sessionId}/history?limit=50` | Get last N messages |
-| `GET` | `/api/chat/{sessionId}/unread?readerEmail=&intent=` | Get unseen messages |
+#### 3.6.1 JWT Generation (Service-to-Service)
+
+```java
+@Component
+public class ServiceAuthClient {
+    private final RSAKey privateKey;
+    private final String serviceName;
+
+    public String createToken(String subject) {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issuer(serviceName)
+                .subject(subject)
+                .issueTime(new Date())
+                .expirationTime(new Date(System.currentTimeMillis() + 120_000)) // 2 mins
+                .build();
+
+        SignedJWT jwt = new SignedJWT(
+                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(privateKey.getKeyID()).build(),
+                claims
+        );
+        jwt.sign(new RSASSASigner(privateKey.toPrivateKey()));
+        return jwt.serialize();
+    }
+}
+```
+
+#### 3.6.2 JWT Verification (FlairBit Tokens)
+
+```java
+@Component
+public class FlairbitTokenVerifier {
+    private final RSAPublicKey publicKey;
+
+    public JWTClaimsSet verifyAndExtract(String token) {
+        SignedJWT signedJWT = SignedJWT.parse(token);
+        JWSVerifier verifier = new RSASSAVerifier(publicKey);
+        if (!signedJWT.verify(verifier)) throw new SecurityException("Invalid signature");
+        JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
+        if (new Date().after(claims.getExpirationTime())) throw new SecurityException("Token expired");
+        return claims;
+    }
+}
+```
+
+#### 3.6.3 Client Authentication
+
+- Clients authenticate with a **user JWT** (issued by an Auth Service).
+- The `SecurityConfig` enforces JWT validation for all APIs except `/auth/**`.
+
+```java
+@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+        .csrf(AbstractHttpConfigurer::disable)
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/auth/**").permitAll()
+            .requestMatchers("/ws/**", "/api/**").hasAuthority("USER")
+            .anyRequest().authenticated()
+        )
+        .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .addFilterBefore(authFilter, UsernamePasswordAuthenticationFilter.class);
+    return http.build();
+}
+```
 
 ---
 
-## 5. WebSocket Flow
+### 3.7 Database
 
-```
-Client connects → /ws (SockJS)
-Subscribes → /user/queue/messages, /user/queue/ack, /topic/session.{id}
+#### 3.7.1 Schema (Liquibase)
+
+```xml
+<!-- chat_sessions -->
+<createTable tableName="chat_sessions">
+    <column name="id" type="UUID"><constraints primaryKey="true"/></column>
+    <column name="sender_profile_id" type="UUID"/><constraints nullable="false"/>
+    <column name="receiver_profile_id" type="UUID"/><constraints nullable="false"/>
+    <column name="intent" type="VARCHAR(50)"/><constraints nullable="false"/>
+    <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="CURRENT_TIMESTAMP"/>
+</createTable>
+<addUniqueConstraint tableName="chat_sessions" columnNames="sender_profile_id, receiver_profile_id, intent"/>
+
+<!-- chat_messages -->
+<createTable tableName="chat_messages">
+    <column name="id" type="UUID"><constraints primaryKey="true"/></column>
+    <column name="session_id" type="UUID"/><constraints nullable="false"/>
+    <column name="sender_profile_id" type="UUID"/><constraints nullable="false"/>
+    <column name="content" type="TEXT"/><constraints nullable="false"/>
+    <column name="client_msg_id" type="UUID"/><constraints unique="true"/>
+    <column name="delivered" type="BOOLEAN" defaultValueBoolean="false"/>
+    <column name="seen" type="BOOLEAN" defaultValueBoolean="false"/>
+    <column name="sent_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="CURRENT_TIMESTAMP"/>
+</createTable>
+
+<!-- chat_message_outbox -->
+<createTable tableName="chat_message_outbox">
+    <column name="id" type="UUID"><constraints primaryKey="true"/></column>
+    <column name="destination" type="VARCHAR(255)"/><constraints nullable="false"/>
+    <column name="payload" type="JSONB"/><constraints nullable="false"/>
+    <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="CURRENT_TIMESTAMP"/>
+    <column name="sent_at" type="TIMESTAMP WITH TIME ZONE"/>
+    <column name="processed" type="BOOLEAN" defaultValueBoolean="false"/>
+    <column name="retry_count" type="INT" defaultValueNumeric="0"/>
+    <column name="next_retry_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="CURRENT_TIMESTAMP"/>
+</createTable>
 ```
 
-### Destinations
-- `/topic/session.{sessionId}` → broadcast to all in session
-- `/user/{profileId}/queue/messages` → private delivery
-- `/user/{email}/queue/ack` → send confirmation
-- `/user/{email}/queue/error` → send failure
+#### 3.7.2 Access Patterns
+
+| Operation                          | SQL Query                                                                                             |
+|------------------------------------|-------------------------------------------------------------------------------------------------------|
+| **Save Message**                   | `INSERT INTO chat_messages (...) VALUES (...) RETURNING *;`                                           |
+| **Check Duplicate Client Message** | `SELECT 1 FROM chat_messages WHERE client_msg_id = ?;`                                                |
+| **Get History**                    | `SELECT * FROM chat_messages WHERE session_id = ? ORDER BY sent_at DESC LIMIT ?;`                     |
+| **Get Unread Messages**            | `SELECT * FROM chat_messages WHERE session_id = ? AND sender_profile_id != ? AND (delivered = false OR seen = false);` |
+| **Claim Outbox Batch**             | `SELECT * FROM chat_message_outbox WHERE processed = false AND next_retry_at <= NOW() ORDER BY created_at LIMIT ? FOR UPDATE SKIP LOCKED;` |
 
 ---
 
-## 6. Message Send Flow (High-Level)
+## 4. Data Flow Sequences
+
+### 4.1 Send a Message
 
 ```mermaid
 sequenceDiagram
     participant Client
+    participant ChatController
     participant ChatService
-    participant DB
-    participant Outbox
+    participant ChatMessageRepo
+    participant OutboxRepo
+    participant OutboxPublisher
     participant STOMP
 
-    Client->>ChatService: POST /message
-    ChatService->>DB: INSERT chat_messages
-    ChatService->>Outbox: INSERT 3x outbox rows
-    ChatService-->>Client: 200 OK (async)
+    Client->>ChatController: POST /api/chat/message
+    ChatController->>ChatService: sendMessage(request)
+    ChatService->>ChatMessageRepo: existsByClientMsgId(clientMessageId)?
+    ChatMessageRepo-->>ChatService: false
+    ChatService->>ChatMessageRepo: save(ChatMessage)
+    ChatMessageRepo-->>ChatService: ChatMessage
+    ChatService->>OutboxRepo: saveAll(List<OutboxEntry>)
+    OutboxRepo-->>ChatService: success
+    ChatService-->>ChatController: ChatMessageResponse
+    ChatController-->>Client: 200 OK
 
-    Note over Outbox,STOMP: Background
-    Outbox->>OutboxPublisher: @Scheduled poll
-    OutboxPublisher->>STOMP: convertAndSend / convertAndSendToUser
-    OutboxPublisher->>DB: UPDATE sent_at, processed = true
+    activate OutboxPublisher
+    OutboxPublisher->>OutboxRepo: claimPendingBatch()
+    OutboxRepo-->>OutboxPublisher: List<OutboxEntry>
+    loop Process Batch
+        OutboxPublisher->>STOMP: convertAndSend(destination, payload)
+        OutboxPublisher->>OutboxRepo: markProcessed(id)
+    end
+    deactivate OutboxPublisher
+```
+
+### 4.2 Relay Message Across Instances
+
+```mermaid
+sequenceDiagram
+    participant RabbitMQ
+    participant ChatMessageRelayListener
+    participant ChatService
+    participant OutboxRepo
+    participant STOMP
+
+    RabbitMQ->>ChatMessageRelayListener: message (app.chat.send)
+    ChatMessageRelayListener->>ChatService: sendMessage(request)
+    ChatService->>ChatMessageRepo: existsByClientMsgId?
+    ChatMessageRepo-->>ChatService: false
+    ChatService->>ChatMessageRepo: save(ChatMessage)
+    ChatService->>OutboxRepo: saveAll(List<OutboxEntry>)
+    ChatService-->>ChatMessageRelayListener: success
+    activate OutboxPublisher
+    OutboxPublisher->>OutboxRepo: claimPendingBatch()
+    OutboxRepo-->>OutboxPublisher: List<OutboxEntry>
+    OutboxPublisher->>STOMP: convertAndSend()
+    OutboxPublisher->>OutboxRepo: markProcessed()
+    deactivate OutboxPublisher
 ```
 
 ---
 
-## 7. Outbox Pattern (Guaranteed Delivery)
+## 5. Error Handling & Retries
 
-### Table: `chat_message_outbox`
-```sql
-destination: VARCHAR(255)  -- e.g., "/topic/session.abc", "user:123:/queue/messages"
-payload: JSONB             -- ChatMessageResponse
-created_at, sent_at, processed, next_retry_at, retry_count
-```
-
-### Publisher Logic (`OutboxPublisher`)
-```java
-@Scheduled(fixedDelay = 1000)
-→ claimPendingBatch(size=500, claimUntil=now+60s) 
-    → SELECT ... FOR UPDATE SKIP LOCKED
-    → UPDATE next_retry_at = claimUntil
-
-→ Parallel process (ExecutorService, CPU-bound)
-    → Deserialize → send via SimpMessagingTemplate
-    → On success: markProcessed(id, retryCount)
-    → On failure: markRetry(id, retryCount+1, nextRetry = now + 2^retry)
-```
-
-**Backoff**: `min(60s, 2^retry)`  
-**Max retries**: 10 → log + dead-letter
+| Scenario                          | Handling                                                                                     |
+|-----------------------------------|----------------------------------------------------------------------------------------------|
+| **Duplicate Client Message ID**   | Ignored; return existing message.                                                            |
+| **FlairBit Service Down**          | Fallback to cached profile. If cache miss, return `503 Service Unavailable`.                |
+| **STOMP Delivery Failure**         | Outbox entry retried with exponential backoff. After 10 retries, marked for manual review.   |
+| **RabbitMQ Connection Lost**       | `ChatMessageRelayListener` pauses listening, retries on connection recovery.                 |
+| **Database Timeout**               | Retry via Spring’s `@Retryable`; fallback to queue for later processing.                     |
 
 ---
 
-## 8. Idempotency & Duplicates
+## 6. Performance & Scalability
 
-```java
-if (msgRepo.existsByClientMsgId(clientMessageId)) → ignore
-```
-- `client_msg_id` is **UUID generated by client**
-- Enforced by DB: `UNIQUE CONSTRAINT`
-- Works across **HTTP, WebSocket, RabbitMQ**
-
----
-
-## 9. Cross-Instance Sync via RabbitMQ
-
-```yaml
-Exchange: amq.topic
-Queue: chat.send.queue
-Routing Key: app/chat.send
-```
-
-### Flow
-```
-Instance A → RabbitTemplate → send ChatMessageRequest
-All Instances (incl A) → @RabbitListener → process → save → outbox
-```
-
-→ **All instances see all messages**  
-→ **No single point of failure**
+| Component          | Optimization Strategy                                                                 |
+|--------------------|----------------------------------------------------------------------------------------|
+| **Caching**        | `Caffeine` cache for FlairBit profiles (15‑min TTL, 50k entries).                       |
+| **Outbox**         | Parallel processing with fixed thread pool; batch claiming.                              |
+| **RabbitMQ**       | Durable queues, topic exchange for flexible routing, prefetch count tuning.              |
+| **Database**       | Indexes on `session_id`, `sent_at`, `client_msg_id`; read replicas for heavy reads.      |
+| **WebSocket**      | STOMP over RabbitMQ for distributed messaging; user-specific queues for targeted delivery.|
 
 ---
 
-## 10. Profile Resolution (FlairBit)
+## 7. Monitoring & Observability
 
-```java
-@FeignClient(name = "flairbit", url = "${flairbit.base-url}")
-→ GET /internal/chat-service/users/{email}/profile/{intent}
-→ Returns ProfileChatDto { id: UUID, email, displayName }
-```
-
-### Optimizations
-- **Caffeine Cache**: `email|intent` → `ProfileChatDto` (15 min, 50k)
-- **Circuit Breaker**: `@CircuitBreaker(name = "flairbit")`
-- **JWT Auth**: `ServiceAuthClient` signs 2-min token with RSA private key
+| Aspect            | Tool/Technique                                                                          |
+|-------------------|-----------------------------------------------------------------------------------------|
+| **Metrics**       | Prometheus + Grafana (message rates, latency, cache hit‑rate, RabbitMQ queue depth).    |
+| **Logging**       | ELK Stack (structured JSON logs).                                                       |
+| **Tracing**       | Jaeger for distributed tracing across services.                                          |
+| **Health Checks** | Kubernetes liveness/readiness probes; DB & RabbitMQ health endpoints.                   |
 
 ---
 
-## 11. Security
+## 8. Deployment
 
-| Layer | Mechanism |
-|------|----------|
-| **HTTP** | JWT Filter → `AuthFilter` |
-| **WebSocket** | Same JWT on connect → `ChannelInterceptor` |
-| **Service-to-Service** | Mutual JWT (RSA256, 2 min) |
-| **Input Validation** | `@Valid`, `@Email`, `@NotBlank` |
-| **Session Access** | `verifyParticipant()` checks profile in session |
-
----
-
-## 12. Session Canonicalization
-
-```java
-pA.id < pB.id ? (pA, pB) : (pB, pA)
-→ (sender_profile_id, receiver_profile_id)
-```
-
-- Enforced in DB: `UNIQUE (sender, receiver, intent)`
-- Prevents `A→B` and `B→A` duplicate sessions
+- **Docker Images**: Each service (chat, profile, outbox) packaged as Docker images.
+- **Kubernetes**:
+    - Deployments for `chat-service` (with HPA based on CPU & RabbitMQ queue depth).
+    - RabbitMQ StatefulSet with persistent volume.
+    - PostgreSQL with read replicas.
+    - Ingress (NGINX) for external access.
+- **Helm Charts**: For declarative deployment to any K8s cluster.
 
 ---
 
-## 13. Caching Strategy
-
-| Cache | Key | TTL | Size | Hit Rate |
-|------|-----|-----|------|----------|
-| `profileCache` | `email|intent` | 15 min | 50k | ~95% |
-| `userCache` | UUID | 15 min | 50k | (future use) |
-
----
-
-## 14. Database Schema (Liquibase)
-
-```xml
-chat_sessions
-└── PK: id
-└── UK: (sender_profile_id, receiver_profile_id, intent)
-└── IDX: (sender, receiver, intent)
-
-chat_messages
-└── PK: id
-└── UK: client_msg_id
-└── IDX: (session_id, sent_at DESC)
-└── IDX: (sender_profile_id)
-
-chat_message_outbox
-└── PK: id
-└── IDX: (next_retry_at) WHERE processed = false AND sent_at IS NULL
-```
-
----
-
-## 15. Scalability & Performance
-
-| Metric | Target | How Achieved |
-|-------|--------|-------------|
-| **QPS** | 5,000 msg/sec | JDBC batch, parallel outbox, Caffeine |
-| **P99 Latency** | < 100ms | In-memory cache, indexed reads |
-| **Concurrent Users** | 50k+ | Stateless, STOMP relay |
-| **Delivery Guarantee** | At-least-once | Outbox + retries |
-| **Failure Tolerance** | 99.99% | Circuit breaker, retry, outbox |
-
----
-
-## 16. Monitoring & Observability
-
-| Source | Metric |
-|-------|--------|
-| `OutboxPublisher` | `processedCounter`, `failedCounter` |
-| Logs | `INFO` (sent), `ERROR` (failed) |
-| DB | `SELECT count(*) FROM chat_message_outbox WHERE processed = false` |
-| Actuator | `/actuator/health`, `/metrics` |
-
----
-
-## 17. Deployment & Ops
-
-| Component | Recommendation |
-|---------|----------------|
-| **Instances** | 3–10 (Kubernetes HPA) |
-| **DB** | PostgreSQL 15 (read replicas) |
-| **RabbitMQ** | 3-node cluster, mirrored queues |
-| **Broker** | External STOMP (RabbitMQ) in prod |
-| **Config** | `application.yml` with profiles |
-
----
-
-## 18. Known Limitations (Non-Critical)
-
-| Feature | Status | Plan |
-|-------|--------|------|
-| Message Edit/Delete | Not supported | Future |
-| Typing Indicators | Not supported | Future |
-| Push Notifications | Not supported | Integrate FCM/APNs |
-| Cursor Pagination | Not supported | Add `?after=msgId` |
-| Rate Limiting | Not supported | Add per-user bucket |
-
-
----
 
