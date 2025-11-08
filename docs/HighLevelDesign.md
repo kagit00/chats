@@ -10,84 +10,73 @@ This document presents the high-level design of a real-time chat system currentl
 
 ```mermaid
 flowchart TD
-    subgraph ClientApplications [Client Applications]
+    %% Client Layer
+    subgraph Clients [Client Applications]
         WEB[Web Browser<br/>SockJS/STOMP Client]
         MOBILE[Mobile App<br/>WebSocket Client]
     end
-    
-    subgraph ChatServiceApplication [Chat Service Application]
-        subgraph APILayer [API Layer]
-            REST_API[REST API<br/>ChatController<br/>/api/chat/*]
-            WS_ENDPOINT[WebSocket Endpoint<br/>/ws<br/>STOMP Protocol]
-        end
-        
-        subgraph ServiceLayer [Service Layer]
-            CHAT_SERVICE[ChatServiceImpl<br/>Message Processing]
-            SESSION_SERVICE[ChatSessionService<br/>Session Management]
-            PROFILE_SERVICE[ProfileService<br/>Profile Caching]
-        end
-        
-        subgraph IntegrationComponents [Integration Components]
-            RELAY_LISTENER[ChatMessageRelayListener<br/>@RabbitListener]
-            OUTBOX_PUBLISHER[OutboxPublisher<br/>@Scheduled Poller]
-            SERVICE_AUTH[ServiceAuthClient<br/>JWT Token Generator]
-        end
-        
-        subgraph Caching [Caching]
-            CAFFEINE[Caffeine Cache<br/>Profile Cache<br/>User Cache]
-        end
+
+    %% Core Service Layer
+    subgraph ChatService [Chat Service Application]
+        REST_API[REST API<br/>ChatController<br/>/api/chat/*]
+        WS_ENDPOINT[WebSocket Endpoint<br/>/ws<br/>STOMP Protocol]
+        CHAT_SERVICE[ChatServiceImpl<br/>Message Processing]
+        SESSION_SERVICE[ChatSessionService<br/>Session Management]
+        PROFILE_SERVICE[ProfileService<br/>Profile Caching]
+        RELAY_LISTENER[ChatMessageRelayListener<br/>@RabbitListener]
+        OUTBOX_PUBLISHER[OutboxPublisher<br/>@Scheduled Poller]
+        SERVICE_AUTH[ServiceAuthClient<br/>JWT Token Generator]
+        CAFFEINE[Caffeine Cache<br/>Profile Cache<br/>User Cache]
     end
-    
-    subgraph ExternalServices [External Services]
+
+    %% External Systems
+    subgraph External [External Services]
         FLAIRBIT[FlairBit Service<br/>User Profiles & Auth]
     end
-    
-    subgraph DataAndMessaging [Data & Messaging]
+
+    %% Data & Messaging Layer
+    subgraph DataMessaging [Data & Messaging]
         POSTGRES[(PostgreSQL<br/>chat_sessions<br/>chat_messages<br/>chat_message_outbox)]
         RABBITMQ[RabbitMQ<br/>Message Broker<br/>chat.send.queue]
         STOMP_BROKER[STOMP Broker<br/>Embedded/Relay]
     end
-    
-    %% Client connections
+
+    %% Connections
     WEB -->|"HTTPS/WSS"| REST_API
     WEB -->|"WebSocket"| WS_ENDPOINT
     MOBILE -->|"HTTPS/WSS"| REST_API
     MOBILE -->|"WebSocket"| WS_ENDPOINT
-    
-    %% API to Service
+
     REST_API --> CHAT_SERVICE
     WS_ENDPOINT --> STOMP_BROKER
-    
-    %% Service interactions
+
     CHAT_SERVICE --> SESSION_SERVICE
     CHAT_SERVICE --> PROFILE_SERVICE
     SESSION_SERVICE --> PROFILE_SERVICE
-    
-    %% External integration
+
     PROFILE_SERVICE --> CAFFEINE
     PROFILE_SERVICE --> FLAIRBIT
     SERVICE_AUTH --> FLAIRBIT
-    
-    %% Data persistence
+
     CHAT_SERVICE --> POSTGRES
     SESSION_SERVICE --> POSTGRES
     OUTBOX_PUBLISHER --> POSTGRES
-    
-    %% Messaging
+
     RELAY_LISTENER --> RABBITMQ
     OUTBOX_PUBLISHER --> STOMP_BROKER
     STOMP_BROKER --> WS_ENDPOINT
-    
+
     %% Styling
-    classDef client fill:#FF9800,color:white
-    classDef service fill:#4CAF50,color:white
-    classDef external fill:#2196F3,color:white
-    classDef data fill:#9C27B0,color:white
-    
-    class WEB,MOBILE client
-    class CHAT_SERVICE,SESSION_SERVICE,PROFILE_SERVICE service
-    class FLAIRBIT external
-    class POSTGRES,RABBITMQ data
+    classDef client fill:#FF9800,color:white,stroke:#F57C00;
+    classDef service fill:#4CAF50,color:white,stroke:#388E3C;
+    classDef external fill:#2196F3,color:white,stroke:#1976D2;
+    classDef data fill:#9C27B0,color:white,stroke:#7B1FA2;
+
+    class WEB,MOBILE client;
+    class CHAT_SERVICE,SESSION_SERVICE,PROFILE_SERVICE,REST_API,WS_ENDPOINT,RELAY_LISTENER,OUTBOX_PUBLISHER,SERVICE_AUTH,CAFFEINE service;
+    class FLAIRBIT external;
+    class POSTGRES,RABBITMQ,STOMP_BROKER data;
+
 
 ```
 
