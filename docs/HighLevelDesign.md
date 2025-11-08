@@ -1,10 +1,5 @@
-Here's a **High-Level Design (HLD) Architecture Diagram** in **Mermaid.js** format — clean, professional, and ready to paste into `docs/hld.md` or any Markdown viewer.
-
 ---
 
-### `hld.md` — **High-Level Architecture Diagram**
-
-```markdown
 # High-Level Design (HLD): Real-Time Chat System
 
 ```mermaid
@@ -103,6 +98,7 @@ flowchart TD
     class FLAIRBIT,RABBITMQ,STOMP_BROKER,POSTGRES external
     class C1,C2 client
     class REST,WS,RABBIT_CONSUMER,OUTBOX,CACHE,FEIGN,SERVICE_AUTH component
+
 ```
 
 ---
