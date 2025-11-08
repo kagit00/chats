@@ -1,5 +1,6 @@
 package com.flairbit.chats.config;
 
+import jakarta.annotation.Nonnull;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
@@ -27,7 +28,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private String relayPasscode;
 
     @Override
-    public void configureMessageBroker(MessageBrokerRegistry registry) {
+    public void configureMessageBroker(@Nonnull MessageBrokerRegistry registry) {
         if ("relay".equalsIgnoreCase(brokerType)) {
             registry.enableStompBrokerRelay("/topic", "/queue")
                     .setRelayHost(relayHost)

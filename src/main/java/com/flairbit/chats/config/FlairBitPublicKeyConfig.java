@@ -12,7 +12,7 @@ import java.io.InputStreamReader;
 import java.security.interfaces.RSAPublicKey;
 
 @Configuration
-public class FlairbitPublicKeyConfig {
+public class FlairBitPublicKeyConfig {
 
     @Bean
     public RSAPublicKey flairbitPublicKey(@Value("${flairbit.auth.public-key}") Resource resource) throws Exception {
