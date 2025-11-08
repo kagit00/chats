@@ -33,42 +33,42 @@ The architecture follows a **microservices** approach with the following major c
 ```mermaid
 flowchart TD
     %% Clients
-    subgraph Clients [Clients]
-        C1[Web Browser\n(SockJS/STOMP)]
-        C2[Mobile App\n(WebSocket)]
+    subgraph Clients ["Clients"]
+        C1["Web Browser<br/>(SockJS/STOMP)"]
+        C2["Mobile App<br/>(WebSocket)"]
     end
 
     %% API & WebSocket Gateway
-    subgraph Gateway [API Gateway / Load Balancer]
-        LB[Ingress / Nginx / Cloud LB]
+    subgraph Gateway ["API Gateway / Load Balancer"]
+        LB["Ingress / Nginx / Cloud LB"]
     end
 
     %% Chat Service Cluster
-    subgraph ChatServiceCluster [chat-service (N Instances - Kubernetes)]
+    subgraph ChatServiceCluster ["chat-service (N Instances - Kubernetes)"]
         direction TB
-        A1[Instance 1]
-        A2[Instance 2]
-        A3[Instance N]
+        A1["Instance 1"]
+        A2["Instance 2"]
+        A3["Instance N"]
     end
 
     %% Internal Components
-    subgraph Components [Internal Components per Instance]
+    subgraph Components ["Internal Components per Instance"]
         direction TB
-        REST[REST Controller\n/api/chat/*]
-        WS[WebSocket Config\n/ws]
-        RABBIT_CONSUMER[@RabbitListener\nchat.send.queue]
-        OUTBOX[OutboxPublisher\n@Scheduled Poller]
-        CACHE[Caffeine Cache\nprofileCache]
-        FEIGN[FlairBit Feign Client\n+CircuitBreaker]
-        SERVICE_AUTH[ServiceAuthClient\nJWT Signer]
+        REST["REST Controller<br/>/api/chat/*"]
+        WS["WebSocket Config<br/>/ws"]
+        RABBIT_CONSUMER["@RabbitListener<br/>chat.send.queue"]
+        OUTBOX["OutboxPublisher<br/>@Scheduled Poller"]
+        CACHE["Caffeine Cache<br/>profileCache"]
+        FEIGN["FlairBit Feign Client<br/>+CircuitBreaker"]
+        SERVICE_AUTH["ServiceAuthClient<br/>JWT Signer"]
     end
 
     %% External Systems
-    subgraph External [External Services]
-        FLAIRBIT[FlairBit Service\n/internal/chat-service/...]
-        RABBITMQ[RabbitMQ Cluster\namq.topic]
-        STOMP_BROKER[STOMP Broker\n(RabbitMQ Relay or Embedded)]
-        POSTGRES[PostgreSQL\nchat_sessions\nchat_messages\nchat_message_outbox]
+    subgraph External ["External Services"]
+        FLAIRBIT["FlairBit Service<br/>/internal/chat-service/..."]
+        RABBITMQ["RabbitMQ Cluster<br/>amq.topic"]
+        STOMP_BROKER["STOMP Broker<br/>(RabbitMQ Relay or Embedded)"]
+        POSTGRES["PostgreSQL<br/>chat_sessions, chat_messages, chat_message_outbox"]
     end
 
     %% Connections
