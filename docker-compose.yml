@@ -1,0 +1,88 @@
+version: '3.9'
+
+networks:
+  kafka-network:
+    external: true
+
+volumes:
+  chats_postgres_data:
+  chats_rabbitmq_data:
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres_chats
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: chats
+    volumes:
+      - chats_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - chats_rabbitmq_data:/var/lib/rabbitmq
+    command: >
+      bash -c "
+        rabbitmq-plugins enable --offline rabbitmq_stomp rabbitmq_management &&
+        rabbitmq-server
+      "
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+
+
+  chats:
+    build: .
+    container_name: chats
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      SERVICE_AUTH_PRIVATE_KEY: classpath:keys/service-to-service-auth/private_key.pem
+      FLAIRBIT_AUTH_PUBLIC_KEY: classpath:keys/user-auth/public_key.pem
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres_chats:5432/chats
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      APP_WEBSOCKET_BROKER_TYPE: relay
+      STOMP_RELAY_HOST: rabbitmq
+      STOMP_RELAY_PORT: 61613
+      STOMP_RELAY_CLIENT_LOGIN: guest
+      STOMP_RELAY_CLIENT_PASSCODE: guest
+      STOMP_RELAY_SYSTEM_LOGIN: guest
+      STOMP_RELAY_SYSTEM_PASSCODE: guest
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+
+    ports:
+      - "8082:8082"
+    networks:
+      - kafka-network
+    restart: always

@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.3.xsd">
+
+    <!-- ============================================================= -->
+    <!-- 1. chat_sessions – independent of Flairbit, UUID-based IDs -->
+    <!-- ============================================================= -->
+    <changeSet id="20251106-01-create-chat-sessions_" author="kaustav">
+        <createTable tableName="chat_sessions">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+
+            <!-- participants: external profile IDs from Flairbit -->
+            <column name="profile1_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="profile2_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+
+            <!-- intent type: dating, freelance, rideshare, etc. -->
+            <column name="intent" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE"
+                    defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="updated_at" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+
+        <!-- canonical uniqueness for a session between 2 profiles + intent -->
+        <addUniqueConstraint
+                tableName="chat_sessions"
+                columnNames="profile1_id, profile2_id, intent"
+                constraintName="uq_chat_sessions_participants_intent"/>
+
+        <createIndex tableName="chat_sessions"
+                     indexName="idx_chat_sessions_participants_intent">
+            <column name="profile1_id"/>
+            <column name="profile2_id"/>
+            <column name="intent"/>
+        </createIndex>
+    </changeSet>
+
+    <!-- ============================================================= -->
+    <!-- 2. chat_messages – stores conversation messages             -->
+    <!-- ============================================================= -->
+    <changeSet id="20251106-02-create-chat-messages_" author="kaustav">
+        <createTable tableName="chat_messages">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+
+            <column name="session_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="sender_profile_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="content" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="client_msg_id" type="UUID">
+                <constraints nullable="false" unique="true"/>
+            </column>
+
+            <column name="delivered" type="BOOLEAN" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="seen" type="BOOLEAN" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="sent_at" type="TIMESTAMP WITH TIME ZONE"
+                    defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="updated_at" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+
+        <!-- optimize message retrieval and pagination -->
+        <createIndex tableName="chat_messages" indexName="idx_chat_messages_session_sentat">
+            <column name="session_id"/>
+            <column name="sent_at"/>
+        </createIndex>
+
+        <createIndex tableName="chat_messages" indexName="idx_chat_messages_sender">
+            <column name="sender_profile_id"/>
+        </createIndex>
+    </changeSet>
+
+    <!-- ============================================================= -->
+    <!-- 3. chat_message_outbox – guaranteed delivery to STOMP broker -->
+    <!-- ============================================================= -->
+    <changeSet id="20251106-03-create-chat-outbox_" author="kaustav">
+        <createTable tableName="chat_message_outbox">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+
+            <column name="payload" type="JSONB">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="destination" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE"
+                    defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+
+            <column name="sent_at" type="TIMESTAMP WITH TIME ZONE"/>
+
+            <column name="retry_count" type="INT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <!-- useful composite index for pending polling -->
+        <createIndex tableName="chat_message_outbox" indexName="idx_outbox_created_sent">
+            <column name="created_at"/>
+            <column name="sent_at"/>
+        </createIndex>
+
+        <!-- optional: partial index for unsent messages (Postgres) -->
+        <sql>
+            CREATE INDEX IF NOT EXISTS idx_outbox_unsent_partial
+            ON chat_message_outbox (created_at)
+            WHERE sent_at IS NULL;
+        </sql>
+    </changeSet>
+
+    <!-- ============================================================= -->
+    <!-- 4. simple audit / housekeeping defaults                      -->
+    <!-- ============================================================= -->
+    <changeSet id="20251106-04-default-updated-at-trigger_" author="kaustav" dbms="postgresql">
+        <sql splitStatements="false" stripComments="false">
+            CREATE OR REPLACE FUNCTION set_updated_at()
+            RETURNS TRIGGER AS $$
+            BEGIN
+            NEW.updated_at = now();
+            RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER trg_chat_sessions_updated
+            BEFORE UPDATE ON chat_sessions
+            FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+            CREATE TRIGGER trg_chat_messages_updated
+            BEFORE UPDATE ON chat_messages
+            FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+        </sql>
+    </changeSet>
+
+    <changeSet id="20251107-rename-chat-session-profiles" author="kaustav" dbms="postgresql">
+        <comment>Rename profile1_id → sender_profile_id and profile2_id → receiver_profile_id</comment>
+
+        <renameColumn
+                tableName="chat_sessions"
+                oldColumnName="profile1_id"
+                newColumnName="sender_profile_id"
+                columnDataType="uuid"/>
+
+        <renameColumn
+                tableName="chat_sessions"
+                oldColumnName="profile2_id"
+                newColumnName="receiver_profile_id"
+                columnDataType="uuid"/>
+    </changeSet>
+
+    <changeSet id="20251108-01-add-processed-and-next-retry-at" author="kaustav" dbms="postgresql">
+        <comment>
+            Add missing columns 'processed' and 'next_retry_at' to chat_message_outbox
+            and create optimized partial index for pending messages.
+        </comment>
+
+        <addColumn tableName="chat_message_outbox">
+            <column name="processed" type="BOOLEAN" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+            <column name="next_retry_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="CURRENT_TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+
+        <sql>
+            CREATE INDEX IF NOT EXISTS idx_outbox_pending_retry
+            ON chat_message_outbox (next_retry_at)
+            WHERE processed = false AND sent_at IS NULL;
+        </sql>
+    </changeSet>
+
+
+</databaseChangeLog>
