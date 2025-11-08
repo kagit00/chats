@@ -10,49 +10,49 @@ This document presents the high-level design of a real-time chat system currentl
 
 ```mermaid
 flowchart TD
-    subgraph "Client Applications"
+    subgraph ClientApplications [Client Applications]
         WEB[Web Browser<br/>SockJS/STOMP Client]
         MOBILE[Mobile App<br/>WebSocket Client]
     end
     
-    subgraph "Chat Service Application"
-        subgraph "API Layer"
+    subgraph ChatServiceApplication [Chat Service Application]
+        subgraph APILayer [API Layer]
             REST_API[REST API<br/>ChatController<br/>/api/chat/*]
             WS_ENDPOINT[WebSocket Endpoint<br/>/ws<br/>STOMP Protocol]
         end
         
-        subgraph "Service Layer"
+        subgraph ServiceLayer [Service Layer]
             CHAT_SERVICE[ChatServiceImpl<br/>Message Processing]
             SESSION_SERVICE[ChatSessionService<br/>Session Management]
             PROFILE_SERVICE[ProfileService<br/>Profile Caching]
         end
         
-        subgraph "Integration Components"
+        subgraph IntegrationComponents [Integration Components]
             RELAY_LISTENER[ChatMessageRelayListener<br/>@RabbitListener]
             OUTBOX_PUBLISHER[OutboxPublisher<br/>@Scheduled Poller]
             SERVICE_AUTH[ServiceAuthClient<br/>JWT Token Generator]
         end
         
-        subgraph "Caching"
+        subgraph Caching [Caching]
             CAFFEINE[Caffeine Cache<br/>Profile Cache<br/>User Cache]
         end
     end
     
-    subgraph "External Services"
+    subgraph ExternalServices [External Services]
         FLAIRBIT[FlairBit Service<br/>User Profiles & Auth]
     end
     
-    subgraph "Data & Messaging"
+    subgraph DataAndMessaging [Data & Messaging]
         POSTGRES[(PostgreSQL<br/>chat_sessions<br/>chat_messages<br/>chat_message_outbox)]
         RABBITMQ[RabbitMQ<br/>Message Broker<br/>chat.send.queue]
         STOMP_BROKER[STOMP Broker<br/>Embedded/Relay]
     end
     
     %% Client connections
-    WEB -->|HTTPS/WSS| REST_API
-    WEB -->|WebSocket| WS_ENDPOINT
-    MOBILE -->|HTTPS/WSS| REST_API
-    MOBILE -->|WebSocket| WS_ENDPOINT
+    WEB -->|"HTTPS/WSS"| REST_API
+    WEB -->|"WebSocket"| WS_ENDPOINT
+    MOBILE -->|"HTTPS/WSS"| REST_API
+    MOBILE -->|"WebSocket"| WS_ENDPOINT
     
     %% API to Service
     REST_API --> CHAT_SERVICE
@@ -88,6 +88,7 @@ flowchart TD
     class CHAT_SERVICE,SESSION_SERVICE,PROFILE_SERVICE service
     class FLAIRBIT external
     class POSTGRES,RABBITMQ data
+
 ```
 
 ## 3. Current Implementation Components
