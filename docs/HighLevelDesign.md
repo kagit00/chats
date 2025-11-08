@@ -17,16 +17,16 @@ flowchart TD
   %% API & Gateway
   LB[Load Balancer / Ingress<br/>TLS termination]
   REST_API[REST API<br/>/api/chat/*]
-  WS_ENDPOINT[WebSocket Endpoint<br/>/ws (STOMP)]
+  WS_ENDPOINT[WebSocket Endpoint<br/>/ws STOMP]
 
   %% Core services (flat list)
   CHAT_SERVICE[ChatService<br/>message processing]
-  SESSION_SERVICE[ChatSessionService<br/>session mgmt]
+  SESSION_SERVICE[ChatSessionService<br/>session management]
   PROFILE_SERVICE[ProfileService<br/>profile caching]
   OUTBOX_PUB[OutboxPublisher<br/>scheduled poller]
-  RELAY_LISTENER[ChatRelayListener<br/>@RabbitListener]
-  SERVICE_AUTH[ServiceAuthClient<br/>jwt signer]
-  CAFFEINE[Cache (Caffeine)<br/>profile cache]
+  RELAY_LISTENER[ChatRelayListener<br/>RabbitListener]
+  SERVICE_AUTH[ServiceAuthClient<br/>JWT signer]
+  CAFFEINE[Caffeine Cache<br/>profile cache]
 
   %% Messaging & DB
   RABBITMQ[RabbitMQ<br/>amq.topic / chat.send.queue]
@@ -72,6 +72,7 @@ flowchart TD
   class REST_API,WS_ENDPOINT,CHAT_SERVICE,SESSION_SERVICE,PROFILE_SERVICE,OUTBOX_PUB,RELAY_LISTENER,SERVICE_AUTH,CAFFEINE services;
   class FLAIRBIT external;
   class POSTGRES,RABBITMQ,STOMP_BROKER data;
+
 ```
 
 ## 3. Current Implementation Components
