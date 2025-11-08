@@ -1,352 +1,456 @@
-
 # High-Level Design (HLD): Real-Time Chat System
 
----
+*Based on the existing codebase implementation*
 
-## 1. Introduction
+## 1. Executive Summary
 
-This document outlines the **High-Level Design (HLD)** for a scalable, real-time chat system.  
-The system supports **web and mobile clients**, provides **instant messaging**, **message history**, **unread counts**, and integrates with external services.  
-Key design goals are **scalability**, **reliability**, **low latency**, and **security**.
+This document presents the high-level design of a real-time chat system currently implemented using Spring Boot, WebSocket/STOMP, and PostgreSQL. The system facilitates real-time messaging between users with different intents (dating, freelance, rideshare, etc.) and integrates with an external FlairBit service for user profile management and authentication.
 
----
-
-## 2. Architecture Overview
-
-The architecture follows a **microservices** approach with the following major components:
-
-![Real-Time Chat System Architecture](###diagram)  
-*(Scroll down for the Mermaid diagram)*
-
-- **Clients**: Web and mobile applications.
-- **API Gateway / Load Balancer**: Entry point for all traffic.
-- **Chat Service Cluster**: Stateless microservice instances handling business logic.
-- **Message Broker**: RabbitMQ for cross-instance communication.
-- **Database**: PostgreSQL for persistent storage.
-- **STOMP Broker**: Enables real-time push over WebSocket.
-- **External Services**: FlairBit (user profiles), caching, and authentication.
-
----
-
-## 3. System Diagram
+## 2. System Architecture Overview
 
 ```mermaid
 flowchart TD
-    %% Clients
-    subgraph Clients ["Clients"]
-        C1["Web Browser<br/>(SockJS/STOMP)"]
-        C2["Mobile App<br/>(WebSocket)"]
+    subgraph "Client Applications"
+        WEB[Web Browser<br/>SockJS/STOMP Client]
+        MOBILE[Mobile App<br/>WebSocket Client]
     end
-
-    %% API & WebSocket Gateway
-    subgraph Gateway ["API Gateway / Load Balancer"]
-        LB["Ingress / Nginx / Cloud LB"]
+    
+    subgraph "Chat Service Application"
+        subgraph "API Layer"
+            REST_API[REST API<br/>ChatController<br/>/api/chat/*]
+            WS_ENDPOINT[WebSocket Endpoint<br/>/ws<br/>STOMP Protocol]
+        end
+        
+        subgraph "Service Layer"
+            CHAT_SERVICE[ChatServiceImpl<br/>Message Processing]
+            SESSION_SERVICE[ChatSessionService<br/>Session Management]
+            PROFILE_SERVICE[ProfileService<br/>Profile Caching]
+        end
+        
+        subgraph "Integration Components"
+            RELAY_LISTENER[ChatMessageRelayListener<br/>@RabbitListener]
+            OUTBOX_PUBLISHER[OutboxPublisher<br/>@Scheduled Poller]
+            SERVICE_AUTH[ServiceAuthClient<br/>JWT Token Generator]
+        end
+        
+        subgraph "Caching"
+            CAFFEINE[Caffeine Cache<br/>Profile Cache<br/>User Cache]
+        end
     end
-
-    %% Chat Service Cluster
-    subgraph ChatServiceCluster ["chat-service (N Instances - Kubernetes)"]
-        direction TB
-        A1["Instance 1"]
-        A2["Instance 2"]
-        A3["Instance N"]
+    
+    subgraph "External Services"
+        FLAIRBIT[FlairBit Service<br/>User Profiles & Auth]
     end
-
-    %% Internal Components
-    subgraph Components ["Internal Components per Instance"]
-        direction TB
-        REST["REST Controller<br/>/api/chat/*"]
-        WS["WebSocket Config<br/>/ws"]
-        RABBIT_CONSUMER["@RabbitListener<br/>chat.send.queue"]
-        OUTBOX["OutboxPublisher<br/>@Scheduled Poller"]
-        CACHE["Caffeine Cache<br/>profileCache"]
-        FEIGN["FlairBit Feign Client<br/>+CircuitBreaker"]
-        SERVICE_AUTH["ServiceAuthClient<br/>JWT Signer"]
+    
+    subgraph "Data & Messaging"
+        POSTGRES[(PostgreSQL<br/>chat_sessions<br/>chat_messages<br/>chat_message_outbox)]
+        RABBITMQ[RabbitMQ<br/>Message Broker<br/>chat.send.queue]
+        STOMP_BROKER[STOMP Broker<br/>Embedded/Relay]
     end
-
-    %% External Systems
-    subgraph External ["External Services"]
-        FLAIRBIT["FlairBit Service<br/>/internal/chat-service/..."]
-        RABBITMQ["RabbitMQ Cluster<br/>amq.topic"]
-        STOMP_BROKER["STOMP Broker<br/>(RabbitMQ Relay or Embedded)"]
-        POSTGRES["PostgreSQL<br/>chat_sessions<br/>chat_messages<br/>chat_message_outbox"]
-    end
-
-    %% Connections
-    C1 -->|HTTPS + JWT| LB
-    C2 -->|WSS + JWT| LB
-
-    LB -->|HTTP| A1
-    LB -->|HTTP| A2
-    LB -->|HTTP| A3
-    LB -->|WebSocket| A1
-    LB -->|WebSocket| A2
-    LB -->|WebSocket| A3
-
-    A1 --> REST
-    A2 --> REST
-    A3 --> REST
-    REST -->|JDBC| POSTGRES
-
-    A1 --> WS
-    A2 --> WS
-    A3 --> WS
-    WS -->|STOMP| STOMP_BROKER
-    STOMP_BROKER -->|/topic/session.*| A1
-    STOMP_BROKER -->|/user/*/queue/*| A1
-    STOMP_BROKER -->|/topic/session.*| A2
-    STOMP_BROKER -->|/user/*/queue/*| A2
-    STOMP_BROKER -->|/topic/session.*| A3
-    STOMP_BROKER -->|/user/*/queue/*| A3
-
-    A1 --> RABBIT_CONSUMER
-    A2 --> RABBIT_CONSUMER
-    A3 --> RABBIT_CONSUMER
-    RABBIT_CONSUMER -->|app/chat.send| RABBITMQ
-    RABBITMQ -->|Publish| A1
-    RABBITMQ -->|Publish| A2
-    RABBITMQ -->|Publish| A3
-
-    A1 --> OUTBOX
-    A2 --> OUTBOX
-    A3 --> OUTBOX
-    OUTBOX -->|"claimPendingBatch()"| POSTGRES
-    OUTBOX -->|"convertAndSend()"| STOMP_BROKER
-
-    REST --> FEIGN
-    FEIGN -->|"Bearer JWT"| FLAIRBIT
-    FEIGN -->|"Cached"| CACHE
-    FEIGN --> SERVICE_AUTH
-    SERVICE_AUTH -->|"RSA Sign"| FEIGN
-
-
+    
+    %% Client connections
+    WEB -->|HTTPS/WSS| REST_API
+    WEB -->|WebSocket| WS_ENDPOINT
+    MOBILE -->|HTTPS/WSS| REST_API
+    MOBILE -->|WebSocket| WS_ENDPOINT
+    
+    %% API to Service
+    REST_API --> CHAT_SERVICE
+    WS_ENDPOINT --> STOMP_BROKER
+    
+    %% Service interactions
+    CHAT_SERVICE --> SESSION_SERVICE
+    CHAT_SERVICE --> PROFILE_SERVICE
+    SESSION_SERVICE --> PROFILE_SERVICE
+    
+    %% External integration
+    PROFILE_SERVICE --> CAFFEINE
+    PROFILE_SERVICE --> FLAIRBIT
+    SERVICE_AUTH --> FLAIRBIT
+    
+    %% Data persistence
+    CHAT_SERVICE --> POSTGRES
+    SESSION_SERVICE --> POSTGRES
+    OUTBOX_PUBLISHER --> POSTGRES
+    
+    %% Messaging
+    RELAY_LISTENER --> RABBITMQ
+    OUTBOX_PUBLISHER --> STOMP_BROKER
+    STOMP_BROKER --> WS_ENDPOINT
+    
     %% Styling
-    classDef service fill:#4CAF50,color:white,stroke:#388E3C;
-    classDef external fill:#2196F3,color:white,stroke:#1976D2;
-    classDef client fill:#FF9800,color:white,stroke:#F57C00;
-    classDef component fill:#9C27B0,color:white,stroke:#7B1FA2;
-
-    class A1,A2,A3 service
-    class FLAIRBIT,RABBITMQ,STOMP_BROKER,POSTGRES external
-    class C1,C2 client
-    class REST,WS,RABBIT_CONSUMER,OUTBOX,CACHE,FEIGN,SERVICE_AUTH component
-
+    classDef client fill:#FF9800,color:white
+    classDef service fill:#4CAF50,color:white
+    classDef external fill:#2196F3,color:white
+    classDef data fill:#9C27B0,color:white
+    
+    class WEB,MOBILE client
+    class CHAT_SERVICE,SESSION_SERVICE,PROFILE_SERVICE service
+    class FLAIRBIT external
+    class POSTGRES,RABBITMQ data
 ```
 
----
+## 3. Current Implementation Components
 
-## 4. Component Description
+### 3.1 Core Components
 
-### 4.1 Clients
-| Type       | Protocol                | Details                                                                 |
-|------------|-------------------------|-------------------------------------------------------------------------|
-| Web        | SockJS + STOMP          | Fallback to HTTP long-polling if WebSocket fails.                       |
-| Mobile     | WebSocket (WSS)         | Native, fast, low-overhead connection.                                  |
-| **Auth**   | JWT (Bearer)            | All requests include a valid JWT signed by `ServiceAuth`.               |
+| Component | Implementation | Purpose |
+|-----------|---------------|---------|
+| **ChatController** | REST API | Handles HTTP requests for chat operations |
+| **ChatServiceImpl** | Service Layer | Core business logic for message processing |
+| **ChatSessionService** | Service Layer | Manages chat session creation and retrieval |
+| **ProfileService** | Service Layer | Caches and retrieves user profiles from FlairBit |
+| **OutboxPublisher** | Scheduled Task | Ensures reliable message delivery via outbox pattern |
+| **ChatMessageRelayListener** | RabbitMQ Listener | Processes messages from RabbitMQ queue |
 
-### 4.2 API Gateway / Load Balancer
-- **Responsibilities**:
-    - TLS termination (HTTPS/WSS).
-    - Routing HTTP requests to `chat-service` instances.
-    - Routing WebSocket connections to the appropriate instance.
-    - Load balancing (Round Robin, Least Connections, etc.).
-    - Rate limiting, DDoS protection, and IP whitelisting.
+### 3.2 Configuration Components
 
-- **Technologies**:  
-  `Nginx`, `AWS ALB`, `Google Cloud Load Balancer`, or a Kubernetes Ingress Controller.
+| Configuration | Purpose |
+|--------------|---------|
+| **WebSocketConfig** | Configures STOMP over WebSocket with SockJS fallback |
+| **RabbitConfig** | Sets up RabbitMQ queues, exchanges, and bindings |
+| **SecurityConfig** | JWT-based authentication and authorization |
+| **CaffeineConfig** | In-memory caching for profiles and users |
+| **FeignConfig** | HTTP client configuration for FlairBit integration |
 
-### 4.3 Chat Service (`chat-service`)
-- **Stateless Microservice** deployed as **N instances** on Kubernetes.
-- **Key Sub-components** (see diagram):
+## 4. Data Flow Architecture
 
-| Component               | Purpose                                                                 |
-|-------------------------|-------------------------------------------------------------------------|
-| **REST Controller**     | Exposes HTTP APIs: `POST /api/chat/send`, `GET /api/chat/history`, `GET /api/chat/unread` |
-| **WebSocket Config**    | Manages real-time connections using **STOMP** over WebSocket. Clients subscribe to topics like `/topic/chat/{chatId}`. |
-| **RabbitListener**      | Listens to `chat.send.queue` (RabbitMQ) to receive messages published by other instances. Relays them via STOMP. |
-| **OutboxPublisher**     | Guarantees message delivery using the **Outbox Pattern**. Periodically polls `chat_message_outbox` and publishes to STOMP & RabbitMQ. |
-| **Caffeine Cache**      | Caches user profiles from FlairBit to reduce latency and external calls. |
-| **FlairBit Feign Client**| Calls the external FlairBit service to fetch user profiles. Wrapped with a **Circuit Breaker** (Hystrix/Resilience4j). |
-| **ServiceAuth Client**  | Generates and validates JWT tokens for internal service communication. |
+### 4.1 Message Send Flow (Current Implementation)
 
-### 4.4 Message Broker – RabbitMQ
-- **Purpose**: Enables **cross-instance communication**.
-- **Exchange**: `amq.topic` for flexible routing.
-- **Queue**: `chat.send.queue` where instances publish messages they receive, allowing other instances to re-broadcast them.
-- **Durable Queues**: Messages survive broker restarts.
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as REST API
+    participant Service as ChatService
+    participant DB as PostgreSQL
+    participant Outbox as OutboxPublisher
+    participant STOMP as STOMP Broker
+    participant Recipient
+    
+    Client->>+API: POST /api/chat/message
+    API->>+Service: sendMessage()
+    
+    Service->>Service: Check idempotency<br/>(client_msg_id)
+    Service->>Service: Validate session
+    Service->>Service: Get sender profile<br/>(cached)
+    
+    Service->>+DB: BEGIN TRANSACTION
+    Service->>DB: INSERT chat_messages
+    Service->>DB: INSERT chat_message_outbox<br/>(3 entries)
+    Service->>DB: COMMIT
+    DB-->>-Service: Success
+    
+    Service-->>-API: ChatMessage
+    API-->>-Client: 200 OK
+    
+    Note over Outbox: Scheduled (1 sec)
+    
+    Outbox->>+DB: Claim pending messages<br/>FOR UPDATE SKIP LOCKED
+    DB-->>-Outbox: Batch of messages
+    
+    loop For each message
+        Outbox->>STOMP: convertAndSend()
+        STOMP->>Recipient: Push message
+        Outbox->>DB: Mark as processed
+    end
+```
 
-### 4.5 STOMP Broker
-- **Implementation Options**:
-    1. **RabbitMQ with STOMP plugin** (used here).
-    2. **Embedded STOMP broker** (e.g., `SockJS` + `BrokerRelayingMessageBroker` in Spring).
+### 4.2 Session Initialization Flow
 
-- **Key Topics/Queues**:
-    - `/topic/chat/{chatId}`: Broadcast to all subscribers of a chat.
-    - `/user/queue/notifications`: User-specific queue for private messages.
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as ChatController
+    participant SessionSvc as ChatSessionService
+    participant ProfileSvc as ProfileService
+    participant Cache as Caffeine Cache
+    participant FlairBit
+    participant DB as PostgreSQL
+    
+    Client->>+API: POST /api/chat/init
+    API->>+SessionSvc: getOrCreateSession()
+    
+    SessionSvc->>+ProfileSvc: getByEmail(fromEmail)
+    ProfileSvc->>Cache: Check cache
+    
+    alt Cache Miss
+        ProfileSvc->>+FlairBit: GET /internal/chat-service/users/{email}/profile/{intent}
+        Note over FlairBit: JWT signed by ServiceAuthClient
+        FlairBit-->>-ProfileSvc: ProfileChatDto
+        ProfileSvc->>Cache: Store in cache
+    end
+    
+    ProfileSvc-->>-SessionSvc: Profile A
+    
+    SessionSvc->>ProfileSvc: getByEmail(toEmail)
+    ProfileSvc-->>SessionSvc: Profile B
+    
+    SessionSvc->>+DB: getOrCreate session<br/>(canonical ordering)
+    DB-->>-SessionSvc: ChatSession
+    
+    SessionSvc-->>-API: ChatSession
+    API-->>-Client: ChatSessionResponse
+```
 
-### 4.6 Database – PostgreSQL
-| Table                  | Purpose                                                                 |
-|------------------------|-------------------------------------------------------------------------|
-| `chat_sessions`        | Stores metadata about chat sessions (e.g., participants, creation time). |
-| `chat_messages`        | Persistent message store (message ID, sender, receiver, timestamp, payload, status). |
-| `chat_message_outbox`  | **Outbox Pattern**: Holds messages **before** they are broadcast. Ensures atomic write to DB and eventual send. |
+## 5. Database Schema (As Implemented)
 
-#### Outbox Pattern Workflow
-1. When a message is received via REST, it is **inserted** into both `chat_messages` and `chat_message_outbox`.
-2. `OutboxPublisher` runs periodically (e.g., every 5 seconds) and:
-    - Fetches pending entries from `chat_message_outbox`.
-    - **Deletes** them from the outbox.
-    - Publishes to **STOMP** (real-time) and **RabbitMQ** (cross-instance).
+```mermaid
+erDiagram
+    chat_sessions {
+        uuid id PK
+        uuid sender_profile_id "Canonical first profile"
+        uuid receiver_profile_id "Canonical second profile"
+        varchar(50) intent "dating/freelance/rideshare"
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    chat_messages {
+        uuid id PK
+        uuid session_id FK
+        uuid sender_profile_id "Actual sender"
+        text content
+        uuid client_msg_id UK "Idempotency key"
+        boolean delivered
+        boolean seen
+        timestamp sent_at
+        timestamp updated_at
+    }
+    
+    chat_message_outbox {
+        uuid id PK
+        jsonb payload "ChatMessageResponse JSON"
+        varchar(255) destination "STOMP destination"
+        boolean processed
+        timestamp created_at
+        timestamp sent_at
+        timestamp next_retry_at
+        int retry_count
+    }
+    
+    chat_sessions ||--o{ chat_messages : contains
+    chat_messages ||--o| chat_message_outbox : "triggers (3 entries per message)"
+```
 
-### 4.7 External Services
+## 6. Security Architecture (Current)
 
-#### FlairBit Service
-- **Role**: Provides **user profile** data (display name, avatar, status).
-- **Integration**:
-    - Called via **Feign client** with a **circuit breaker**.
-    - Results are cached in **Caffeine** to reduce latency and load.
+### 6.1 Authentication Flow
 
-#### ServiceAuth
-- **Role**: Manages **JWT signing/verification**.
-- **Usage**:  
-  `chat-service` uses `ServiceAuthClient` to sign internal requests to FlairBit.
+```mermaid
+flowchart LR
+    subgraph "Client"
+        JWT[JWT Token<br/>from FlairBit]
+    end
+    
+    subgraph "Chat Service"
+        AUTH_FILTER[AuthFilter]
+        VERIFIER[FlairbitTokenVerifier]
+        SECURITY_CTX[Security Context]
+    end
+    
+    subgraph "Service-to-Service"
+        SERVICE_AUTH[ServiceAuthClient]
+        PRIVATE_KEY[RSA Private Key]
+    end
+    
+    JWT -->|Bearer Token| AUTH_FILTER
+    AUTH_FILTER --> VERIFIER
+    VERIFIER -->|RSA Public Key| VERIFIER
+    VERIFIER --> SECURITY_CTX
+    
+    SERVICE_AUTH --> PRIVATE_KEY
+    SERVICE_AUTH -->|Sign JWT| SERVICE_AUTH
+```
 
----
+### 6.2 Security Implementation
 
-## 5. Data Flow – Key Use Cases
+- **User Authentication**: JWT tokens issued by FlairBit, verified using RSA public key
+- **Service Authentication**: Inter-service calls use JWT signed with service's RSA private key
+- **Authorization**: Spring Security with method-level security (`@EnableMethodSecurity`)
+- **WebSocket Security**: JWT validation on connection establishment
 
-### 5.1 Sending a Message
+## 7. Messaging Architecture
 
-1. **Client** → `POST /api/chat/send` (or via WebSocket).
-2. **Chat Service**:
-    - Validates request & JWT.
-    - Inserts message into `chat_messages` **and** `chat_message_outbox`.
-    - Returns ACK to client.
-3. **OutboxPublisher** (same instance):
-    - Detects new row in `chat_message_outbox`.
-    - Removes row.
-    - Publishes message to **STOMP Broker** (`/topic/chat/{chatId}`).
-    - Publishes same message to **RabbitMQ** (`app/chat.send`).
-4. **Other Instances** (via RabbitMQ):
-    - Consume message from `app/chat.send` queue.
-    - Re-publish to their **STOMP Broker**.
-5. All connected clients subscribed to the topic receive the message **in real-time**.
+### 7.1 RabbitMQ Configuration
 
-### 5.2 Receiving Real-Time Updates
+```mermaid
+graph TD
+    subgraph "RabbitMQ Broker"
+        EXCHANGE[amq.topic<br/>Topic Exchange]
+        QUEUE[chat.send.queue]
+        BINDING[Binding<br/>app/chat.send]
+    end
+    
+    subgraph "Publishers"
+        SERVICE1[Chat Service<br/>Instance 1]
+        SERVICE2[Chat Service<br/>Instance 2]
+    end
+    
+    subgraph "Consumers"
+        LISTENER1[ChatMessageRelayListener<br/>Instance 1]
+        LISTENER2[ChatMessageRelayListener<br/>Instance 2]
+    end
+    
+    SERVICE1 -->|Publish| EXCHANGE
+    SERVICE2 -->|Publish| EXCHANGE
+    EXCHANGE -->|Route| QUEUE
+    QUEUE -->|Consume| LISTENER1
+    QUEUE -->|Consume| LISTENER2
+```
 
-1. Client subscribes to `/topic/chat/{chatId}` via STOMP.
-2. Whenever a message is published to that topic (by any instance), the **STOMP Broker** pushes it to all subscribed clients.
+### 7.2 STOMP/WebSocket Configuration
 
-### 5.3 Fetching Message History
+- **Broker Type**: Configurable (Embedded or External Relay)
+- **Endpoints**: `/ws` with SockJS fallback
+- **Message Prefixes**:
+    - Application destination: `/app`
+    - User destination: `/user`
+    - Broker destination: `/topic`, `/queue`
 
-1. **Client** → `GET /api/chat/history?chatId={id}&page=1&size=50`.
-2. **Chat Service** queries `chat_messages` and returns paginated results.
+## 8. Caching Strategy (Current)
 
-### 5.4 Unread Count
+```mermaid
+graph TD
+    subgraph "Caffeine Cache Configuration"
+        PROFILE_CACHE[Profile Cache<br/>TTL: 15 min<br/>Max: 50,000]
+        USER_CACHE[User Cache<br/>TTL: 15 min<br/>Max: 50,000]
+    end
+    
+    REQUEST[Profile Request] --> CHECK{Cache Hit?}
+    CHECK -->|Yes| RETURN[Return Cached]
+    CHECK -->|No| FLAIRBIT[Call FlairBit]
+    FLAIRBIT --> STORE[Store in Cache]
+    STORE --> RETURN
+```
 
-1. **Client** → `GET /api/chat/unread?chatId={id}`.
-2. **Chat Service** counts rows in `chat_messages` where `receiver = user` and `status = UNREAD`.
+## 9. Resilience Patterns (Implemented)
 
----
+### 9.1 Outbox Pattern
 
-## 6. Scalability & Performance
+```mermaid
+stateDiagram-v2
+    [*] --> Created: Message sent
+    Created --> Pending: Saved to outbox
+    Pending --> Processing: Claimed by scheduler
+    Processing --> Delivered: Success
+    Processing --> Retry: Failure
+    Retry --> Processing: Exponential backoff
+    Retry --> Failed: Max retries (10)
+    Delivered --> [*]
+```
 
-| Layer                | Scalability Strategy                                                                 |
-|----------------------|--------------------------------------------------------------------------------------|
-| **Clients**          | Unlimited – each client connects independently.                                       |
-| **Load Balancer**    | Horizontal scaling; supports millions of connections.                                 |
-| **Chat Service**     | **Stateless** → add more Kubernetes pods. Autoscaling based on CPU/RabbitMQ queue depth. |
-| **RabbitMQ**         | Clustered deployment for high availability and sharding.                              |
-| **PostgreSQL**       | Read replicas for heavy read loads. Partitioning for large tables.                   |
-| **Caching**          | Caffeine reduces DB & external service load.                                          |
+### 9.2 Circuit Breaker
 
----
+- **Implementation**: Resilience4j Circuit Breaker for FlairBit client
+- **Configuration**:
+    - Failure threshold: 50%
+    - Wait duration in open state: 5s
+    - Sliding window size: 10
+    - Half-open calls: 3
 
-## 7. Fault Tolerance & Reliability
+## 10. API Specification (Current)
 
-| Concern                     | Solution                                                                             |
-|-----------------------------|--------------------------------------------------------------------------------------|
-| **Message Loss**            | **Outbox Pattern** + **Durable RabbitMQ queues**.                                     |
-| **Node Failure**            | Stateless services + Kubernetes self-healing.                                        |
-| **RabbitMQ Down**           | Retry with backoff in `RabbitListener`. Fallback to STOMP only.                      |
-| **Database Down**           | Connection pooling with retry. OutboxPublisher skips until DB is back.               |
-| **External Service Failure**| **Circuit Breaker** on FlairBit client; fallback to cached data.                     |
+### 10.1 REST Endpoints
 
----
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/chat/init` | Initialize chat session |
+| POST | `/api/chat/message` | Send a message |
+| GET | `/api/chat/{sessionId}/history` | Get message history |
+| GET | `/api/chat/{sessionId}/unread` | Get unread messages |
 
-## 8. Security
+### 10.2 WebSocket/STOMP Destinations
 
-| Aspect              | Implementation                                                                 |
-|---------------------|---------------------------------------------------------------------------------|
-| **Transport**       | TLS (HTTPS/WSS) enforced by Load Balancer.                                      |
-| **Authentication**  | JWT (Bearer) for both client and service-to-service communication.               |
-| **Authorization**   | `ServiceAuth` validates JWT claims; fine-grained access control in `chat-service`. |
-| **Data Integrity**  | All messages are stored with a checksum (optional).                              |
+| Type | Destination | Description |
+|------|------------|-------------|
+| Subscribe | `/topic/session.{sessionId}` | Receive session messages |
+| Subscribe | `/user/queue/messages` | Personal message queue |
+| Subscribe | `/user/queue/ack` | Message acknowledgments |
+| Subscribe | `/user/queue/error` | Error notifications |
+| Send | `/app/chat.send` | Send message via WebSocket |
 
----
+## 11. System Characteristics
 
-## 9. Technology Stack
+### 11.1 Scalability Features
 
-| Layer          | Technology                                                                 |
-|----------------|----------------------------------------------------------------------------|
-| **Client**     | Web: SockJS, STOMP.js; Mobile: WebSocket                                   |
-| **API Gateway**| Nginx / AWS ALB / Kubernetes Ingress                                       |
-| **Chat Service**| Spring Boot (Java 17), Kotlin Coroutines (alternative)                     |
-| **Messaging**  | RabbitMQ (STOMP plugin)                                                    |
-| **Database**   | PostgreSQL 14+                                                             |
-| **Cache**      | Caffeine                                                                   |
-| **External**   | OpenFeign + Resilience4j (Circuit Breaker)                                 |
-| **Auth**       | JWT, Spring Security                                                       |
-| **Container**  | Docker, Kubernetes                                                         |
-| **CI/CD**      | GitHub Actions / Jenkins / ArgoCD                                          |
+- **Stateless Design**: Chat service instances are stateless
+- **Horizontal Scaling**: Multiple instances can run concurrently
+- **Database Optimization**:
+    - Indexes on frequently queried columns
+    - Partial index for outbox pending messages
+    - FOR UPDATE SKIP LOCKED for concurrent processing
 
----
+### 11.2 Reliability Features
 
-## 10. Deployment
+- **Idempotency**: Client message ID prevents duplicates
+- **Transactional Outbox**: Guarantees message delivery
+- **Retry Mechanism**: Exponential backoff for failed messages
+- **Connection Resilience**: SockJS fallback for WebSocket
 
-- **Docker Containers** for each component.
-- **Kubernetes** manages:
-    - Deployments (chat-service pods).
-    - Services (internal DNS for discovery).
-    - Horizontal Pod Autoscaler (HPA).
-    - Ingress for external access.
-- **Helm Charts** for easy provisioning.
+## 12. Monitoring & Observability (Configured)
 
----
+### 12.1 Key Metrics Points
 
-## 11. Monitoring & Observability
+- **OutboxPublisher**: Processed and failed counters
+- **Database Triggers**: Auto-update timestamps
+- **Circuit Breaker**: State transition events
+- **Thread Pool**: Configurable worker threads for outbox processing
 
-| Area          | Tool                                                                     |
-|---------------|--------------------------------------------------------------------------|
-| **Metrics**   | Prometheus + Grafana                                                     |
-| **Logging**   | ELK Stack (Elasticsearch, Logstash, Kibana) or Loki                       |
-| **Tracing**   | Jaeger / Zipkin                                                          |
-| **Health Checks** | Kubernetes liveness/readiness probes, RabbitMQ & DB health endpoints. |
+### 12.2 Operational Considerations
 
----
+- **Batch Processing**: Outbox processes messages in batches (500 default)
+- **Polling Interval**: 1-second fixed delay for outbox
+- **Cache Metrics**: Hit/miss rates available via Caffeine stats
+- **Connection Limits**: Configurable RabbitMQ consumer concurrency (4-10)
 
-## 12. Future Enhancements
+## 13. Deployment Considerations
 
-1. **Message Edit/Delete** – Add support to modify or remove messages after sending.
-2. **End-to-End Encryption** – For private chats.
-3. **File/Image Sharing** – Extend message payload to support binary data.
-4. **Presence & Typing Indicators** – Use additional STOMP topics.
-5. **Push Notifications** – For mobile apps when the app is in the background.
+### 13.1 Environment Configuration
 
----
+```yaml
+Required Environment Variables:
+- DB_USERNAME, DB_PASSWORD
+- RABBITMQ_HOST, RABBITMQ_USER, RABBITMQ_PASS
+- FLAIRBIT_URL
+- SERVICE_PRIVATE_KEY (path to RSA key)
+- FLAIRBIT_PUBLIC_KEY (path to RSA public key)
+```
 
-### Diagram Explanation
+### 13.2 Infrastructure Requirements
 
-| Component | Role |
-|---------|------|
-| **Clients** | Web & Mobile via WebSocket (SockJS fallback) |
-| **Load Balancer** | Routes HTTP + WebSocket, terminates TLS |
-| **chat-service (N)** | Stateless, horizontally scalable |
-| **REST API** | Message send, history, unread |
-| **WebSocket** | Real-time push via STOMP |
-| **RabbitMQ** | Cross-instance message relay |
-| **OutboxPublisher** | Guarantees STOMP delivery |
-| **PostgreSQL** | Source of truth |
-| **FlairBit** | External profile service (cached) |
-| **Caffeine** | Hot profile cache |
+| Component | Requirement |
+|-----------|------------|
+| PostgreSQL | Version 13+ with UUID support |
+| RabbitMQ | Version 3.8+ with management plugin |
+| Java Runtime | Java 17+ |
+| Memory | 2-4 GB per instance |
+| CPU | 2-4 cores per instance |
 
----
+## 14. System Strengths
+
+1. **Reliability**: Outbox pattern ensures no message loss
+2. **Performance**: Multi-level caching reduces external calls
+3. **Security**: Proper JWT validation with RSA keys
+4. **Flexibility**: Supports multiple intent types
+5. **Maintainability**: Clean separation of concerns
+
+## 15. Potential Improvements
+
+1. **Redis Integration**: Add distributed caching for session state
+2. **Metrics**: Implement comprehensive Micrometer metrics
+3. **Tracing**: Add distributed tracing with Sleuth/Zipkin
+4. **Rate Limiting**: Implement per-user rate limiting
+5. **Message Encryption**: Add end-to-end encryption option
+6. **Bulk Operations**: Support batch message sending
+7. **Presence System**: Real-time online/offline status
+
+## 16. Conclusion
+
+The current implementation provides a solid foundation for a real-time chat system with:
+
+- **Core Functionality**: Complete message sending, delivery, and history
+- **Reliability**: Transactional outbox pattern for guaranteed delivery
+- **Integration**: Clean integration with FlairBit service
+- **Real-time**: WebSocket/STOMP for instant messaging
+- **Security**: JWT-based authentication and authorization
+
