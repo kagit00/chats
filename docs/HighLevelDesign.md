@@ -1,4 +1,4 @@
-```markdown
+
 # High-Level Design (HLD): Real-Time Chat System
 
 ---
@@ -347,7 +347,4 @@ flowchart TD
 | **FlairBit** | External profile service (cached) |
 | **Caffeine** | Hot profile cache |
 
---- 
-
-*End of HLD Document*
-```
+---
