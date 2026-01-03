@@ -1,10 +1,10 @@
 # High-Level Design (HLD): Real-Time Chat System
 
-*Based on the existing codebase implementation*
+*Based on a reference implementation*
 
 ## 1. Executive Summary
 
-This document presents the high-level design of a real-time chat system currently implemented using Spring Boot, WebSocket/STOMP, and PostgreSQL. The system facilitates real-time messaging between users with different intents (dating, freelance, rideshare, etc.) and integrates with an external FlairBit service for user profile management and authentication.
+This document presents the high-level design of a real-time chat system based on a reference implementation using Spring Boot, WebSocket/STOMP, and PostgreSQL. The system facilitates real-time messaging between users with different intents (dating, freelance, rideshare, etc.) and integrates with an external FlairBit service for user profile management and authentication.
 
 ## 2. System Architecture Overview
 
@@ -100,7 +100,7 @@ flowchart TD
 
 ## 4. Data Flow Architecture
 
-### 4.1 Message Send Flow (Current Implementation)
+### 4.1 Message Send Flow
 
 ```mermaid
 sequenceDiagram
@@ -128,7 +128,7 @@ sequenceDiagram
     Service-->>-API: ChatMessage
     API-->>-Client: 200 OK
     
-    Note over Outbox: Scheduled (1 sec)
+    Note over Outbox: Scheduled poller
     
     Outbox->>+DB: Claim pending messages<br/>FOR UPDATE SKIP LOCKED
     DB-->>-Outbox: Batch of messages
@@ -177,7 +177,7 @@ sequenceDiagram
     API-->>-Client: ChatSessionResponse
 ```
 
-## 5. Database Schema (As Implemented)
+## 5. Database Schema
 
 ```mermaid
 erDiagram
@@ -217,7 +217,7 @@ erDiagram
     chat_messages ||--o| chat_message_outbox : "triggers (3 entries per message)"
 ```
 
-## 6. Security Architecture (Current)
+## 6. Security Architecture
 
 ### 6.1 Authentication Flow
 
@@ -288,17 +288,17 @@ graph TD
 - **Broker Type**: Configurable (Embedded or External Relay)
 - **Endpoints**: `/ws` with SockJS fallback
 - **Message Prefixes**:
-    - Application destination: `/app`
-    - User destination: `/user`
-    - Broker destination: `/topic`, `/queue`
+  - Application destination: `/app`
+  - User destination: `/user`
+  - Broker destination: `/topic`, `/queue`
 
-## 8. Caching Strategy (Current)
+## 8. Caching Strategy
 
 ```mermaid
 graph TD
     subgraph "Caffeine Cache Configuration"
-        PROFILE_CACHE[Profile Cache<br/>TTL: 15 min<br/>Max: 50,000]
-        USER_CACHE[User Cache<br/>TTL: 15 min<br/>Max: 50,000]
+        PROFILE_CACHE[Profile Cache]
+        USER_CACHE[User Cache]
     end
     
     REQUEST[Profile Request] --> CHECK{Cache Hit?}
@@ -308,7 +308,7 @@ graph TD
     STORE --> RETURN
 ```
 
-## 9. Resilience Patterns (Implemented)
+## 9. Resilience Patterns
 
 ### 9.1 Outbox Pattern
 
@@ -320,20 +320,16 @@ stateDiagram-v2
     Processing --> Delivered: Success
     Processing --> Retry: Failure
     Retry --> Processing: Exponential backoff
-    Retry --> Failed: Max retries (10)
+    Retry --> Failed: Max retries
     Delivered --> [*]
 ```
 
 ### 9.2 Circuit Breaker
 
 - **Implementation**: Resilience4j Circuit Breaker for FlairBit client
-- **Configuration**:
-    - Failure threshold: 50%
-    - Wait duration in open state: 5s
-    - Sliding window size: 10
-    - Half-open calls: 3
+- **Configuration**: Applied with standard failure rate threshold and sliding window
 
-## 10. API Specification (Current)
+## 10. API Specification
 
 ### 10.1 REST Endpoints
 
@@ -354,64 +350,21 @@ stateDiagram-v2
 | Subscribe | `/user/queue/error` | Error notifications |
 | Send | `/app/chat.send` | Send message via WebSocket |
 
-## 11. System Characteristics
+## 11. Design Characteristics (Intended)
 
-### 11.1 Scalability Features
-
-- **Stateless Design**: Chat service instances are stateless
-- **Horizontal Scaling**: Multiple instances can run concurrently
+- **Stateless Design**: Chat service instances are designed to be stateless
+- **Horizontal Scaling**: Multiple instances can operate concurrently
 - **Database Optimization**:
-    - Indexes on frequently queried columns
-    - Partial index for outbox pending messages
-    - FOR UPDATE SKIP LOCKED for concurrent processing
+  - Indexes on frequently queried columns
+  - Partial index for outbox pending messages
+  - FOR UPDATE SKIP LOCKED for concurrent processing
+- **Reliability Features**:
+  - Idempotency via client message ID
+  - Transactional outbox pattern
+  - Retry mechanism with exponential backoff
+  - Connection resilience via SockJS fallback
 
-### 11.2 Reliability Features
-
-- **Idempotency**: Client message ID prevents duplicates
-- **Transactional Outbox**: Guarantees message delivery
-- **Retry Mechanism**: Exponential backoff for failed messages
-- **Connection Resilience**: SockJS fallback for WebSocket
-
-## 12. Monitoring & Observability (Configured)
-
-### 12.1 Key Metrics Points
-
-- **OutboxPublisher**: Processed and failed counters
-- **Database Triggers**: Auto-update timestamps
-- **Circuit Breaker**: State transition events
-- **Thread Pool**: Configurable worker threads for outbox processing
-
-### 12.2 Operational Considerations
-
-- **Batch Processing**: Outbox processes messages in batches (500 default)
-- **Polling Interval**: 1-second fixed delay for outbox
-- **Cache Metrics**: Hit/miss rates available via Caffeine stats
-- **Connection Limits**: Configurable RabbitMQ consumer concurrency (4-10)
-
-## 13. Deployment Considerations
-
-### 13.1 Environment Configuration
-
-```yaml
-Required Environment Variables:
-- DB_USERNAME, DB_PASSWORD
-- RABBITMQ_HOST, RABBITMQ_USER, RABBITMQ_PASS
-- FLAIRBIT_URL
-- SERVICE_PRIVATE_KEY (path to RSA key)
-- FLAIRBIT_PUBLIC_KEY (path to RSA public key)
-```
-
-### 13.2 Infrastructure Requirements
-
-| Component | Requirement |
-|-----------|------------|
-| PostgreSQL | Version 13+ with UUID support |
-| RabbitMQ | Version 3.8+ with management plugin |
-| Java Runtime | Java 17+ |
-| Memory | 2-4 GB per instance |
-| CPU | 2-4 cores per instance |
-
-## 14. System Strengths
+## 12. System Strengths
 
 1. **Reliability**: Outbox pattern ensures no message loss
 2. **Performance**: Multi-level caching reduces external calls
@@ -419,7 +372,7 @@ Required Environment Variables:
 4. **Flexibility**: Supports multiple intent types
 5. **Maintainability**: Clean separation of concerns
 
-## 15. Potential Improvements
+## 13. Potential Improvements
 
 1. **Redis Integration**: Add distributed caching for session state
 2. **Metrics**: Implement comprehensive Micrometer metrics
@@ -428,14 +381,4 @@ Required Environment Variables:
 5. **Message Encryption**: Add end-to-end encryption option
 6. **Bulk Operations**: Support batch message sending
 7. **Presence System**: Real-time online/offline status
-
-## 16. Conclusion
-
-The current implementation provides a solid foundation for a real-time chat system with:
-
-- **Core Functionality**: Complete message sending, delivery, and history
-- **Reliability**: Transactional outbox pattern for guaranteed delivery
-- **Integration**: Clean integration with FlairBit service
-- **Real-time**: WebSocket/STOMP for instant messaging
-- **Security**: JWT-based authentication and authorization
 

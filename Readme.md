@@ -1,25 +1,26 @@
 
+
 # Real-Time Chat System
 
-A robust, scalable, and feature-rich real-time chat system designed for modern applications. Built on a microservices architecture, it ensures reliable message delivery, low latency, and a seamless user experience.
+A robust and scalable real-time chat system **based on an implemented reference design** using Spring Boot, WebSocket/STOMP, and PostgreSQL. It focuses on architectural patterns for reliability, low latency, and production-readiness considerations.
 
 ---
 
 ## Key Features
 
-- **Real-Time Messaging**: Instant message delivery using WebSockets (STOMP).
+- **Real-Time Messaging**: Design for instant message delivery using WebSockets (STOMP).
 - **Message History**: Paginated fetching of past conversations.
-- **Delivery & Read Receipts**: Track when messages are delivered and seen by recipients.
-- **Unread Message Count**: Endpoint to fetch the number of unread messages for a user.
-- **Cross-Instance Scalability**: Uses RabbitMQ to relay messages between multiple application instances.
-- **Guaranteed Delivery**: An outbox pattern ensures no messages are lost during failures.
-- **Secure**: JWT-based authentication for both client requests and inter-service communication.
+- **Delivery & Read Receipts**: Data model to track when messages are delivered and seen by recipients.
+- **Unread Message Count**: Endpoint logic to fetch the number of unread messages for a user.
+- **Cross-Instance Scalability**: Designed to use RabbitMQ to relay messages between multiple application instances.
+- **Guaranteed Delivery**: Implemented **Outbox Pattern** to ensure no messages are lost during failures.
+- **Secure**: JWT-based authentication design for both client requests and inter-service communication.
 
 ---
 
 ## Architecture Overview
 
-The system is composed of several interconnected services that work together to provide a seamless chat experience.
+The system is composed of several interconnected components designed to work together to provide a seamless chat experience.
 
 ```mermaid
 graph TB
@@ -68,10 +69,10 @@ graph TB
 | Component              | Responsibility                                                                                                     |
 |------------------------|-------------------------------------------------------------------------------------------------------------------|
 | **Chat Service**       | The central hub handling all chat-related business logic, API endpoints, and database interactions.                |
-| **Profile Service**    | A separate service (or module) that fetches user profile information, with caching for performance.              |
-| **Outbox Publisher**   | A reliable, scheduled background worker that guarantees message broadcasting to WebSocket clients.                |
+| **Profile Service**    | A separate service (or module) designed to fetch user profile information, with caching for performance.          |
+| **Outbox Publisher**   | A reliable, scheduled background worker designed to guarantee message broadcasting to WebSocket clients.           |
 | **WebSocket/STOMP**     | Manages persistent connections and uses topics/queues for targeted message delivery to users.                    |
-| **RabbitMQ**           | A message broker that acts as the nervous system for distributing messages across different service instances.    |
+| **RabbitMQ**           | A message broker designed to act as the distribution layer for messages across different service instances.       |
 | **PostgreSQL**         | The primary database for persisting chat sessions, messages, and the outbox for reliability.                    |
 
 ---
@@ -86,8 +87,7 @@ graph TB
 | **Message Broker**     | RabbitMQ                                                                  |
 | **Inter-Comm**         | REST (Feign Client), STOMP, RabbitMQ                                      |
 | **Security**           | JWT (RSA-signed)                                                          |
-| **Build & Deployment** | Docker, Kubernetes                                                        |
-| **Monitoring**         | Prometheus, Grafana, ELK Stack                                           |
+| **Build & Tooling**    | Docker, Maven                                                             |
 
 ---
 
@@ -105,26 +105,20 @@ graph TB
 
 ## Security
 
-- **Client Authentication**: All API and WebSocket connections are protected by JWTs issued by a central authentication service.
+- **Client Authentication**: API and WebSocket connections are designed to be protected by JWTs issued by a central authentication service.
 - **Inter-Service Authentication**: Service-to-service calls (e.g., to the Profile Service) are secured using short-lived, RSA-signed JWTs.
-- **Authorization**: The system ensures users can only access their own chat sessions and messages.
+- **Authorization**: The system logic ensures users can only access their own chat sessions and messages.
 
 ---
 
-## Reliability & Scalability
+## Design Characteristics (Intended)
+
+*Note: This section describes the architectural goals and design patterns implemented, rather than validated production metrics.*
 
 - **Guaranteed Delivery**: The **Outbox Pattern** decouples message persistence from message broadcasting. If the WebSocket broker is down, the message remains in the outbox and is retried until successful.
-- **Horizontal Scaling**: The stateless nature of the services allows for running multiple instances behind a load balancer. RabbitMQ ensures messages are routed correctly.
-- **Automatic Retries**: Failed operations (like outbox publishing) are retried with exponential backoff.
-- **Caching**: User profiles are cached in Redis to reduce latency and load on the Profile Service.
-
----
-
-## Monitoring & Observability
-
-- **Metrics**: Exposed via Micrometer for Prometheus. Key metrics include message rate, outbox queue size, and WebSocket connection count.
-- **Logging**: Structured JSON logging provides a clear audit trail of all message operations.
-- **Health Checks**: Spring Boot Actuator endpoints provide liveness and readiness information for Kubernetes.
+- **Horizontal Scaling**: The stateless nature of the services allows for running multiple instances behind a load balancer. RabbitMQ is designed to ensure messages are routed correctly between instances.
+- **Automatic Retries**: Failed operations (like outbox publishing) include logic for retrying with exponential backoff.
+- **Caching**: User profiles are designed to be cached in Redis to reduce latency and load on the Profile Service.
 
 ---
 
@@ -168,4 +162,3 @@ The service will be available at `http://localhost:8080`.
 | `POST` | `/ws`                                  | WebSocket endpoint for STOMP connections.  |
 
 ---
-
