@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.flairbit.chats.dto.ChatMessageResponse;
 import com.flairbit.chats.dto.ChatSessionResponse;
+import com.flairbit.chats.dto.MessageWithTime;
 import com.flairbit.chats.dto.ProfileChatDto;
 import com.flairbit.chats.models.ChatMessage;
 import com.flairbit.chats.models.ChatMessageOutbox;
@@ -19,9 +20,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.UUID;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
 import lombok.RequiredArgsConstructor;
+
+import static java.util.Arrays.stream;
 
 @Slf4j
 @Service
@@ -35,6 +41,7 @@ public class ChatServiceImp implements ChatService {
     private final ProfileService profileService;
     private final ObjectMapper json;
     private final SimpMessagingTemplate messaging;
+
 
     @Override
     public ChatSessionResponse initChat(String fromEmail, String toEmail, String intent) {
@@ -156,4 +163,6 @@ public class ChatServiceImp implements ChatService {
             throw new RuntimeException("Failed to serialize payload for destination: " + destination, e);
         }
     }
+
+
 }

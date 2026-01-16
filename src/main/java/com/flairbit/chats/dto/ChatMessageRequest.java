@@ -15,8 +15,6 @@ import java.util.UUID;
 @AllArgsConstructor
 public class ChatMessageRequest {
     private UUID sessionId;
-    @Email
-    private String senderEmail;
     private String intent;
     @NotBlank
     private String content;
